@@ -3,7 +3,7 @@ name: Build FireBolt Sync APK
 on:
   workflow_dispatch:
   push:
-    branches: [main, fix/android-build-errors]
+    branches: [main, fix/android-build-errors, fix/ble-discovery]
 
 permissions:
   contents: read
@@ -30,24 +30,75 @@ jobs:
       - name: Extract Android project
         run: unzip -q FireBoltSync-Android-Project.zip -d project
 
-      - name: Fix Android compile errors in starter source
+      - name: Improve BLE discovery diagnostics
         working-directory: project
         run: |
           python3 - <<'PY'
           from pathlib import Path
           p = Path("app/src/main/java/com/fireboltsync/app/MainActivity.kt")
-          source = p.read_text()
-          import_line = "import androidx.activity.compose.rememberLauncherForActivityResult\n"
-          set_content_import = "import androidx.activity.compose.setContent\n"
-          if set_content_import not in source:
-              if import_line not in source:
-                  raise SystemExit("Could not find Compose activity-result import anchor")
-              source = source.replace(import_line, import_line + set_content_import, 1)
-          source = source.replace(
-              "android.os.Handler(mainLooper).postDelayed({",
-              "android.os.Handler(activity.mainLooper).postDelayed({"
-          )
-          p.write_text(source)
+          s = p.read_text()
+          if "import android.bluetooth.le.ScanSettings" not in s:
+              s = s.replace("import android.bluetooth.le.ScanResult\\n", "import android.bluetooth.le.ScanResult\\nimport android.bluetooth.le.ScanSettings\\n", 1)
+          old_failed = '''            override fun onScanFailed(errorCode: Int) {
+                          scanning = false
+                          status = "Scan failed ($errorCode). Check Bluetooth and permissions."
+                      }
+          '''
+          new_failed = '''            override fun onBatchScanResults(results: MutableList<ScanResult>) {
+                          results.forEach { onScanResult(ScanCallback.CALLBACK_TYPE_ALL_MATCHES, it) }
+                      }
+                      override fun onScanFailed(errorCode: Int) {
+                          scanning = false
+                          status = when (errorCode) {
+                              ScanCallback.SCAN_FAILED_ALREADY_STARTED -> "Scan already running. Wait a moment and retry."
+                              ScanCallback.SCAN_FAILED_APPLICATION_REGISTRATION_FAILED -> "Android could not register the scanner. Toggle Bluetooth off/on and retry."
+                              ScanCallback.SCAN_FAILED_FEATURE_UNSUPPORTED -> "This tablet does not support the requested BLE scan."
+                              ScanCallback.SCAN_FAILED_INTERNAL_ERROR -> "Android Bluetooth scan error. Toggle Bluetooth off/on and retry."
+                              else -> "Bluetooth scan failed (code $errorCode). Check permissions and Bluetooth."
+                          }
+                      }
+          '''
+          if old_failed in s:
+              s = s.replace(old_failed, new_failed, 1)
+          old_start = '''            status = "Scanning nearby BLE devices…"
+                      scanning = true
+                      adapter.bluetoothLeScanner.startScan(scanCallback)
+                      android.os.Handler(activity.mainLooper).postDelayed({
+          '''
+          new_start = '''            status = "Scanning for 20 seconds… Keep the watch awake and nearby."
+                      scanning = true
+                      val scanner = adapter.bluetoothLeScanner
+                      if (scanner == null) {
+                          scanning = false
+                          status = "BLE scanner unavailable. Check that Bluetooth is enabled."
+                          return
+                      }
+                      val settings = ScanSettings.Builder()
+                          .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                          .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+                          .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+                          .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
+                          .build()
+                      scanner.startScan(null, settings, scanCallback)
+                      android.os.Handler(activity.mainLooper).postDelayed({
+          '''
+          if old_start in s:
+              s = s.replace(old_start, new_start, 1)
+          old_end = '''                try { adapter.bluetoothLeScanner?.stopScan(scanCallback) } catch (_: Exception) {}
+                          scanning = false
+                          if (devices.isEmpty()) status = "No devices found. Keep the watch awake and retry."
+                          else status = "Found ${devices.size} device(s). Protocol connection is not implemented yet."
+                      }, 12000)
+          '''
+          new_end = '''                try { scanner.stopScan(scanCallback) } catch (_: Exception) {}
+                          scanning = false
+                          if (devices.isEmpty()) status = "No BLE advertisements received. Check watch advertising, Bluetooth permissions, and Android Location setting if required."
+                          else status = "Found ${devices.size} device(s). Watch connection/data protocol is not implemented yet."
+                      }, 20000)
+          '''
+          if old_end in s:
+              s = s.replace(old_end, new_end, 1)
+          p.write_text(s)
           PY
 
       - name: Build APK
