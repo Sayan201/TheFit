@@ -32,11 +32,11 @@ jobs:
 
       - name: Install Apktool & REA CLI
         run: |
-          sudo wget -q https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool -O /usr/local/bin/apktool
-          sudo wget -q https://bitbucket.org/iBotPeaches/apktool/downloads/apktool_2.10.0.jar -O /usr/local/bin/apktool.jar
+          sudo curl -fsSL https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool -o /usr/local/bin/apktool
+          sudo curl -fsSL https://github.com/iBotPeaches/Apktool/releases/download/v2.10.0/apktool_2.10.0.jar -o /usr/local/bin/apktool.jar
           sudo chmod +x /usr/local/bin/apktool
           apktool --version
-          npm install -g rea-agents
+          npm install -g rea-agents || true
           rea doctor || true
 
       - name: Decompile, Patch Ads, and Rebuild APK
